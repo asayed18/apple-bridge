@@ -30,7 +30,7 @@ Nothing to install: it runs on the **Windows PowerShell 5.1** built into Windows
 
    This:
    - starts the script hidden in the background and adds it to Windows startup,
-   - creates a random secret key (`key.txt`, next to the script),
+   - pairs a first device named `iPhone` with its own random secret key (stored in `devices.json`, next to the script),
    - **detects your PC's local IP address** and prints the URL for the iPhone, e.g.
      `http://192.168.1.23:38765/?key=AbC123...` (it's also copied to your clipboard),
    - opens the **phone setup page** in your browser, with a QR code to scan with the iPhone camera.
@@ -44,13 +44,35 @@ Nothing to install: it runs on the **Windows PowerShell 5.1** built into Windows
 
    Your Wi-Fi must use the **Private** network profile (Settings → Network & internet → your network).
 
-Other commands:
+### More devices
+
+Every iPhone, iPad or other device gets **its own key**, so you can cut off one lost phone without touching the others.
+All paired devices share the same PC clipboard.
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\clip-sync.ps1 -Info        # print the URL again (e.g. after your IP changed)
-powershell -ExecutionPolicy Bypass -File .\clip-sync.ps1 -Uninstall   # stop it and remove it from startup
+powershell -ExecutionPolicy Bypass -File .\clip-sync.ps1 -Pair "iPad"           # add a device; opens its setup page
+powershell -ExecutionPolicy Bypass -File .\clip-sync.ps1 -Devices               # list devices and when each was last seen
+powershell -ExecutionPolicy Bypass -File .\clip-sync.ps1 -Info -Device "iPad"   # show a device's URL and setup page again
+powershell -ExecutionPolicy Bypass -File .\clip-sync.ps1 -Revoke "iPad"         # cut off that device right away
+```
+
+- Reinstalled a phone? Run `-Pair` with its existing name: you get the **same** URL back, so nothing else changes.
+- Lost a phone? `-Revoke` it. The server picks the change up immediately; the other devices keep working.
+  Pair it again later to give it a **new** key.
+- Device names are not case-sensitive (`iPad` and `ipad` are the same device).
+
+### Other commands
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\clip-sync.ps1 -Info                  # print the URL again (when only one device is paired)
+powershell -ExecutionPolicy Bypass -File .\clip-sync.ps1 -Uninstall             # stop it and remove it from startup (devices are kept)
 powershell -ExecutionPolicy Bypass -File .\clip-sync.ps1 -Install -Port 38766   # use another port
 ```
+
+Add `-NoBrowser` to any command that would open the setup page if you only want the URL printed.
+
+Upgrading from an older version with `key.txt`: the first run turns that key into a device named `iPhone`,
+so your existing shortcuts keep working.
 
 > **Tip:** the URL contains your PC's IP. To stop it from changing, give the PC a fixed address in your router
 > (often called "DHCP reservation" or "always assign the same IPv4 address").
@@ -129,7 +151,7 @@ This works the same in the Shortcuts app on iPhone or Mac.
 
 ## Notes
 
-- **Security:** the server only answers requests with your secret key. It runs on your local network only; don't expose the port to the internet. Delete `key.txt` and run `-Install` again to get a new key.
+- **Security:** the server only answers requests carrying the key of a paired device. It runs on your local network only; don't expose the port to the internet. To change a device's key, `-Revoke` it and `-Pair` it again.
 - A single `.txt` item from the iPhone is treated as **text** (Shortcuts wraps copied text in a `.txt` file). Add `&as=file` to the URL in shortcut C if you want to send real `.txt` files as files.
 - Files are held in memory while transferring, so very large videos (several GB) are not a good fit.
 - VPNs on the PC (e.g. NordVPN's "Invisibility on LAN") or on the iPhone can block local connections.

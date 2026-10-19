@@ -26,4 +26,4 @@ apple-bridge/
 ## Security
 
 The tools are meant for your local network. Don't expose their ports to the internet.
-Secrets such as `key.txt` are generated on your machine and are never committed (see `.gitignore`).
+Secrets such as device keys (`devices.json`) are generated on your machine and are never committed (see `.gitignore`).

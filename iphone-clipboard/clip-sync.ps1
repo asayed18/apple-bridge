@@ -9,19 +9,29 @@
 # the Windows clipboard API for files and images needs a single-threaded apartment (-Install takes care of it).
 #
 # Usage:
-#   powershell -ExecutionPolicy Bypass -File clip-sync.ps1 -Install     start now and at every login, then print the URL
-#   powershell -ExecutionPolicy Bypass -File clip-sync.ps1 -Info        print the URL again (e.g. after the PC's IP changed)
-#   powershell -ExecutionPolicy Bypass -File clip-sync.ps1 -Uninstall   stop it and remove it from startup
+#   powershell -ExecutionPolicy Bypass -File clip-sync.ps1 -Install          start now and at every login, pair a first device
+#   powershell -ExecutionPolicy Bypass -File clip-sync.ps1 -Pair "iPad"      add a device (each device gets its own key)
+#   powershell -ExecutionPolicy Bypass -File clip-sync.ps1 -Devices          list paired devices and when each was last seen
+#   powershell -ExecutionPolicy Bypass -File clip-sync.ps1 -Info -Device "iPad"  show a device's URL and setup page again
+#   powershell -ExecutionPolicy Bypass -File clip-sync.ps1 -Revoke "iPad"    cut off one device; the others keep working
+#   powershell -ExecutionPolicy Bypass -File clip-sync.ps1 -Uninstall        stop it and remove it from startup (devices are kept)
 
 #Requires -Version 5.1
 param(
     [switch]$Install,
     [switch]$Uninstall,
+    [switch]$Devices,
+    [string]$Pair,
+    [string]$Revoke,
     [switch]$Info,
+    [string]$Device,   # with -Info: which device; may be left out when only one is paired
+    [switch]$NoBrowser,   # don't open the setup page in the browser
     [int]$Port = 38765   # outside the ranges Windows/Hyper-V usually reserves (netsh int ipv4 show excludedportrange protocol=tcp)
 )
 
-$KeyFile      = Join-Path $PSScriptRoot 'key.txt'
+$DevicesFile  = Join-Path $PSScriptRoot 'devices.json'     # name + key per paired device; edited by the commands above
+$LastSeenFile = Join-Path $PSScriptRoot 'last-seen.json'   # written only by the server, so -Revoke never races with it
+$KeyFile      = Join-Path $PSScriptRoot 'key.txt'          # single shared key of older versions, migrated on first run
 $InboxDir     = Join-Path $env:USERPROFILE 'Downloads\From iPhone'
 $StartupLink  = Join-Path ([Environment]::GetFolderPath('Startup')) 'iPhone Clipboard Sync.lnk'
 $FirewallRule = 'iPhone Clipboard Sync'
@@ -36,14 +46,62 @@ $ShortcutLinks = [ordered]@{
     'Send File to PC'      = ''
 }
 
-# Secret the iPhone must send, so other devices on the network can't use the clipboard.
-if (-not (Test-Path $KeyFile)) {
+# ---------- Paired devices ----------
+# Every device sends its own secret key, so other devices on the network can't use the clipboard
+# and one lost phone can be revoked without re-pairing the rest.
+
+function New-DeviceKey {
     $bytes = New-Object byte[] 12
     [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
-    $newKey = [Convert]::ToBase64String($bytes).Replace('+', '-').Replace('/', '_').TrimEnd('=')
-    [IO.File]::WriteAllText($KeyFile, $newKey)
+    [Convert]::ToBase64String($bytes).Replace('+', '-').Replace('/', '_').TrimEnd('=')
 }
-$Key = [IO.File]::ReadAllText($KeyFile).Trim()
+
+# Throws if the file exists but can't be read or parsed: treating a damaged devices.json as
+# "no devices" would let the next -Pair overwrite every paired device.
+function Read-JsonFile([string]$path) {
+    if (-not (Test-Path -LiteralPath $path)) { return $null }
+    $text = [IO.File]::ReadAllText($path, $Utf8NoBom)
+    if (-not $text.Trim()) { return $null }
+    try { ConvertFrom-Json $text -ErrorAction Stop }
+    catch { throw "Could not read $path ($($_.Exception.Message)). Fix or delete the file and try again." }
+}
+
+function Write-JsonFile([string]$path, $value) {
+    # Write a temp file, then swap it in, so readers never see a half-written file.
+    # The swap is retried because the other process may have the file open for a moment.
+    $temp = "$path.$PID.tmp"
+    [IO.File]::WriteAllText($temp, (ConvertTo-Json -InputObject $value -Depth 4), $Utf8NoBom)
+    for ($attempt = 1; ; $attempt++) {
+        try { Move-Item -LiteralPath $temp -Destination $path -Force -ErrorAction Stop; return }
+        catch {
+            if ($attempt -ge 10) {
+                Remove-Item -LiteralPath $temp -ErrorAction SilentlyContinue
+                throw "Could not save $path ($($_.Exception.Message))."
+            }
+            Start-Sleep -Milliseconds 100
+        }
+    }
+}
+
+function Get-Devices {
+    if (-not (Test-Path -LiteralPath $DevicesFile) -and (Test-Path -LiteralPath $KeyFile)) {
+        # Older versions had one key for everyone: keep it working as the first device.
+        $oldKey = [IO.File]::ReadAllText($KeyFile).Trim()
+        Save-Devices @([pscustomobject]@{ name = 'iPhone'; key = $oldKey; added = (Get-Date).ToString('s') })
+        Remove-Item -LiteralPath $KeyFile
+    }
+    # Windows PowerShell 5.1 emits a JSON array as one object, so enumerate it explicitly.
+    $parsed = Read-JsonFile $DevicesFile
+    @(@($parsed) | Where-Object { $_ -and $_.name -and $_.key })
+}
+
+function Save-Devices($paired) {
+    Write-JsonFile $DevicesFile @($paired)
+}
+
+function Find-Device($paired, [string]$name) {
+    $paired | Where-Object { $_.name -eq $name } | Select-Object -First 1   # -eq is case-insensitive
+}
 
 # ---------- Setup commands ----------
 
@@ -66,22 +124,22 @@ function Get-ServerProcess {
         Where-Object { $_.CommandLine -like "*$([IO.Path]::GetFileName($PSCommandPath))*" -and $_.ProcessId -ne $PID }
 }
 
-function Show-Info {
+function Show-Info($device) {
     $ip = Get-LanAddress
     if (-not $ip) {
         Write-Warning 'Could not find this PC''s home-network address. Run ipconfig and use the IPv4 address of your Wi-Fi or Ethernet adapter.'
         $ip = '<PC-IP>'
     }
-    $url = "http://${ip}:$Port/?key=$Key"
-    $setupUrl = "http://${ip}:$Port/setup?key=$Key"
-    Set-Clipboard -Value $url
+    $url = "http://${ip}:$Port/?key=$($device.key)"
+    $setupUrl = "http://${ip}:$Port/setup?key=$($device.key)"
+    # Not copied to the PC clipboard: every paired device can read that, so it would learn this device's key.
     Write-Host ''
-    Write-Host 'URL for the iPhone shortcuts (also copied to the clipboard):' -ForegroundColor Cyan
+    Write-Host "URL for the shortcuts on '$($device.name)':" -ForegroundColor Cyan
     Write-Host "  $url" -ForegroundColor Green
     Write-Host ''
-    Write-Host 'Phone setup page (opening in your browser now; scan its QR code with the iPhone camera):' -ForegroundColor Cyan
+    Write-Host "Setup page (opening in your browser now; scan its QR code with the camera on '$($device.name)'):" -ForegroundColor Cyan
     Write-Host "  $setupUrl"
-    if ($ip -ne '<PC-IP>') { Start-Process $setupUrl }
+    if ($ip -ne '<PC-IP>' -and -not $NoBrowser) { Start-Process $setupUrl }
     Write-Host ''
     Write-Host 'Received files are saved to:' -ForegroundColor Cyan
     Write-Host "  $InboxDir"
@@ -95,10 +153,37 @@ function Show-Info {
     }
 }
 
+function Show-Devices($paired) {
+    # A one-item list arrives as a single object (no .Count on 5.1), an empty one as $null.
+    $paired = @($paired | Where-Object { $_ })
+    $lastSeen = Read-JsonFile $LastSeenFile
+    if (-not $paired.Count) {
+        Write-Host 'No devices are paired. Add one with:  -Pair "iPhone"'
+        return
+    }
+    $paired | ForEach-Object {
+        $seen = if ($lastSeen -and $lastSeen.($_.key)) { $lastSeen.($_.key) } else { 'never' }
+        [pscustomobject]@{ Device = $_.name; Added = $_.added; 'Last seen' = $seen }
+    } | Format-Table -AutoSize | Out-String | Write-Host
+}
+
+# The device a command refers to: the named one, or the only one when no name is given.
+function Resolve-Device($paired, [string]$name) {
+    $paired = @($paired | Where-Object { $_ })
+    if ($name) {
+        $device = Find-Device $paired $name
+        if (-not $device) { throw "No device named '$name'. Run -Devices to list them." }
+        return $device
+    }
+    if ($paired.Count -eq 1) { return $paired[0] }
+    if (-not $paired.Count) { throw 'No devices are paired. Add one with:  -Pair "iPhone"' }
+    throw "Several devices are paired; name one, e.g. -Info `"$($paired[0].name)`". Run -Devices to list them."
+}
+
 if ($Uninstall) {
     Get-ServerProcess | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
     Remove-Item -LiteralPath $StartupLink -ErrorAction SilentlyContinue
-    Write-Host 'Stopped and removed from startup.'
+    Write-Host 'Stopped and removed from startup. Paired devices are kept for a later -Install.'
     if (Get-NetFirewallRule -DisplayName $FirewallRule -ErrorAction SilentlyContinue) {
         Write-Host "To remove the firewall rule, run as Administrator:  Remove-NetFirewallRule -DisplayName '$FirewallRule'"
     }
@@ -123,19 +208,58 @@ if ($Install) {
     Start-Process -FilePath $shell -ArgumentList $arguments -WindowStyle Hidden
     Write-Host 'Running in the background, and will start automatically at every login.' -ForegroundColor Green
     Start-Sleep -Seconds 3   # let the server start before the setup page opens
-    Show-Info
+
+    $paired = @(Get-Devices)
+    if (-not $paired.Count) {
+        $paired = @([pscustomobject]@{ name = 'iPhone'; key = (New-DeviceKey); added = (Get-Date).ToString('s') })
+        Save-Devices $paired
+        Write-Host "Paired a first device named 'iPhone'. Add more with -Pair `"iPad`"."
+    }
+    if ($paired.Count -eq 1) { Show-Info $paired[0] } else { Show-Devices $paired }
+    exit
+}
+
+if ($Pair) {
+    $Pair = $Pair.Trim()
+    if (-not $Pair) { throw 'Give the device a name, e.g. -Pair "iPad".' }
+    $paired = @(Get-Devices)
+    $existing = Find-Device $paired $Pair
+    if ($existing) {
+        # Re-showing the same key lets a reinstalled phone pick up its old URL.
+        Write-Host "'$($existing.name)' is already paired; showing its URL again. Use -Revoke first to give it a new key." -ForegroundColor Yellow
+        Show-Info $existing
+        exit
+    }
+    $new = [pscustomobject]@{ name = $Pair; key = (New-DeviceKey); added = (Get-Date).ToString('s') }
+    Save-Devices (@($paired) + $new)
+    Write-Host "Paired '$($new.name)'." -ForegroundColor Green
+    Show-Info $new
+    exit
+}
+
+if ($Revoke) {
+    $paired = @(Get-Devices)
+    $revoked = Find-Device $paired $Revoke
+    if (-not $revoked) { throw "No device named '$Revoke'. Run -Devices to list them." }
+    Save-Devices @($paired | Where-Object { $_.key -ne $revoked.key })
+    Write-Host "Revoked '$($revoked.name)'. It can no longer reach this PC; the other devices are not affected." -ForegroundColor Green
+    exit
+}
+
+if ($Devices) {
+    Show-Devices (Get-Devices)
     exit
 }
 
 if ($Info) {
-    Show-Info
+    Show-Info (Resolve-Device (Get-Devices) $Device)
     exit
 }
 
 # ---------- Server ----------
 
 # Only one copy of the script may run at a time.
-$mutex = New-Object System.Threading.Mutex($false, 'Global\iPhoneClipboardSync')
+$mutex = New-Object System.Threading.Mutex($false, "Global\iPhoneClipboardSync-$Port")
 if (-not $mutex.WaitOne(0)) { exit }
 
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
@@ -304,7 +428,7 @@ function Send-Text($stream, [string]$status, [string]$text) {
 # Opened on the PC it shows a QR code of its own address; scanned with the iPhone it shows the
 # sync URL with a Copy button and the links to add the ready-made shortcuts.
 # (Keep this file ASCII-only: Windows PowerShell 5.1 reads scripts without a BOM as ANSI.)
-function Get-SetupPage([string]$syncUrl) {
+function Get-SetupPage([string]$syncUrl, [string]$deviceName) {
     $shortcuts = foreach ($entry in $ShortcutLinks.GetEnumerator()) { @{ name = $entry.Key; link = $entry.Value } }
     $html = @'
 <!doctype html>
@@ -345,7 +469,7 @@ function Get-SetupPage([string]$syncUrl) {
 <body>
 <main>
   <h1>Clipboard Sync</h1>
-  <p class="lead">Copy on your iPhone, paste on this PC, and the other way round.</p>
+  <p class="lead">Setting up <b>{{DEVICE}}</b>. Copy on it, paste on this PC, and the other way round.</p>
 
   <section class="card hidden" id="scan">
     <h2>Scan with your iPhone camera</h2>
@@ -376,7 +500,9 @@ function Get-SetupPage([string]$syncUrl) {
   </section>
 </main>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"
+        integrity="sha512-ZDSPMa/JM1D+7kdg2x3BsruQ6T/JpJo3jWDWkCZsP+5yVyp1KfESqLI+7RqB5k24F7p2cV7i2YHh/890y6P6Sw=="
+        crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <script>
   var syncUrl = {{SYNC_URL}};
   var shortcuts = {{SHORTCUTS}};
@@ -445,6 +571,7 @@ function Get-SetupPage([string]$syncUrl) {
 '@
     $html.Replace('{{SYNC_URL}}', (ConvertTo-Json $syncUrl -Compress)).
         Replace('{{SHORTCUTS}}', (ConvertTo-Json @($shortcuts) -Compress)).
+        Replace('{{DEVICE}}', [Net.WebUtility]::HtmlEncode($deviceName)).
         Replace('{{GUIDE_URL}}', $GuideUrl)
 }
 
@@ -537,6 +664,56 @@ function Get-ClipboardPayload {
     @{ Text = [Windows.Forms.Clipboard]::GetText() }
 }
 
+# ---------- Device keys ----------
+
+$script:DeviceCache = @()
+$script:DeviceStamp = 'not loaded'   # never equals a real stamp, so the first request loads (and migrates key.txt)
+$script:LastSeen    = @{}            # device key -> last visit, seeded from last-seen.json so a restart keeps history
+$script:SavedKeys   = @{}            # device keys already present in last-seen.json
+$script:LastSaved   = [datetime]::MinValue
+
+function Write-ErrorLog([string]$message) {
+    "$(Get-Date -Format s)  $message" | Add-Content (Join-Path $PSScriptRoot 'error.log')
+}
+
+try {
+    $saved = Read-JsonFile $LastSeenFile
+    if ($saved) {
+        foreach ($p in $saved.PSObject.Properties) { $script:LastSeen[$p.Name] = $p.Value; $script:SavedKeys[$p.Name] = $true }
+    }
+} catch { Write-ErrorLog $_.Exception.Message }
+
+# The paired device that owns this key, or $null. devices.json is re-read whenever it changes,
+# so -Pair and -Revoke take effect on the next request without restarting the server.
+function Find-DeviceByKey([string]$key) {
+    $stamp = if (Test-Path -LiteralPath $DevicesFile) { (Get-Item -LiteralPath $DevicesFile).LastWriteTimeUtc } else { $null }
+    if ($stamp -ne $script:DeviceStamp) {
+        try {
+            $script:DeviceCache = @(Get-Devices)
+            $script:DeviceStamp = $stamp
+        } catch {
+            # Keep serving the devices we already know; try again on the next request.
+            Write-ErrorLog $_.Exception.Message
+        }
+    }
+    if (-not $key) { return $null }
+    $script:DeviceCache | Where-Object { $_.key -ceq $key } | Select-Object -First 1   # keys are case-sensitive
+}
+
+function Update-LastSeen($device) {
+    $script:LastSeen[$device.key] = (Get-Date).ToString('s')
+    # Save at once for a device not in the file yet; otherwise at most once a minute,
+    # so a busy clipboard doesn't rewrite the file on every copy.
+    $isNew = -not $script:SavedKeys[$device.key]
+    if (-not $isNew -and ((Get-Date) - $script:LastSaved).TotalSeconds -lt 60) { return }
+    $live = @{}
+    foreach ($d in $script:DeviceCache) { if ($script:LastSeen[$d.key]) { $live[$d.key] = $script:LastSeen[$d.key] } }
+    Write-JsonFile $LastSeenFile $live
+    $script:SavedKeys = @{}
+    foreach ($k in $live.Keys) { $script:SavedKeys[$k] = $true }
+    $script:LastSaved = Get-Date
+}
+
 # ---------- Requests ----------
 
 function Invoke-Request($client) {
@@ -551,17 +728,20 @@ function Invoke-Request($client) {
         $headers[$name.Trim().ToLower()] = "$value".Trim()
     }
 
-    if (-not ($target -match '[?&]key=([^&]+)' -and $Matches[1] -eq $Key)) {
-        Send-Text $stream '403 Forbidden' 'Forbidden'
+    $key = if ($target -match '[?&]key=([^&]+)') { $Matches[1] } else { '' }
+    $device = Find-DeviceByKey $key
+    if (-not $device) {
+        Send-Text $stream '403 Forbidden' 'Forbidden: unknown or revoked device key'
         return
     }
+    try { Update-LastSeen $device } catch { Write-ErrorLog $_.Exception.Message }   # bookkeeping must not block a copy
 
     switch ($method) {
         'GET' {
             if ($target -like '/setup*') {
                 $hostName = $headers['host']
                 if (-not $hostName) { $hostName = "$(Get-LanAddress):$Port" }
-                $page = Get-SetupPage "http://$hostName/?key=$Key"
+                $page = Get-SetupPage "http://$hostName/?key=$($device.key)" $device.name
                 Send-Response $stream '200 OK' $Utf8NoBom.GetBytes($page) 'text/html; charset=utf-8'
                 return
             }
@@ -619,6 +799,6 @@ $listener.Start()
 while ($true) {
     $client = $listener.AcceptTcpClient()
     try { Invoke-Request $client }
-    catch { "$(Get-Date -Format s)  $($_.Exception.Message)" | Add-Content (Join-Path $PSScriptRoot 'error.log') }
+    catch { Write-ErrorLog $_.Exception.Message }
     finally { $client.Close() }
 }

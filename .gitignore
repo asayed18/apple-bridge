@@ -1,3 +1,6 @@
 # Generated per machine; never commit
 key.txt
+devices.json
+last-seen.json
+*.tmp
 error.log
