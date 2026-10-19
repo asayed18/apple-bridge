@@ -95,9 +95,9 @@ The ready-made shortcuts, if you'd rather add them directly (each asks for your 
 
 | Shortcut | What it does |
 |---|---|
-| [Get from PC](https://www.icloud.com/shortcuts/905f2537215e4b22b1980facda92d167) | Puts the PC clipboard on your iPhone |
-| [Send Clipboard to PC](https://www.icloud.com/shortcuts/ac4370954568405bae60844963c87b13) | Sends your iPhone clipboard to the PC |
-| [Send File to PC](https://www.icloud.com/shortcuts/58df2f621976410e9bbfc29a0864adec) | Share photos and files from the Share Sheet |
+| [Get from PC](https://www.icloud.com/shortcuts/d54609b2174945ae9a3b1b472378a2fe) | Puts the PC clipboard on your iPhone |
+| [Send Clipboard to PC](https://www.icloud.com/shortcuts/3e51baeff1af4ea08dde7e6a953db756) | Sends your iPhone clipboard to the PC |
+| [Send File to PC](https://www.icloud.com/shortcuts/b69dfdcca94c4a6998115cdc65a9fbd1) | Share photos and files from the Share Sheet |
 
 ### Manual way: build the shortcuts yourself
 

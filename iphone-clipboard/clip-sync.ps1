@@ -41,9 +41,9 @@ $GuideUrl     = 'https://github.com/asayed18/apple-bridge/tree/main/iphone-clipb
 # iCloud links of the ready-made shortcuts, shown on the phone setup page (/setup).
 # Each shortcut asks for the sync URL when it is added. Empty = not published yet.
 $ShortcutLinks = [ordered]@{
-    'Get from PC'          = 'https://www.icloud.com/shortcuts/905f2537215e4b22b1980facda92d167'
-    'Send Clipboard to PC' = 'https://www.icloud.com/shortcuts/ac4370954568405bae60844963c87b13'
-    'Send File to PC'      = 'https://www.icloud.com/shortcuts/58df2f621976410e9bbfc29a0864adec'
+    'Get from PC'          = 'https://www.icloud.com/shortcuts/d54609b2174945ae9a3b1b472378a2fe'
+    'Send Clipboard to PC' = 'https://www.icloud.com/shortcuts/3e51baeff1af4ea08dde7e6a953db756'
+    'Send File to PC'      = 'https://www.icloud.com/shortcuts/b69dfdcca94c4a6998115cdc65a9fbd1'
 }
 
 # ---------- Paired devices ----------
@@ -768,7 +768,10 @@ function Invoke-Request($client) {
                     [HttpBytes]::LooksLikeText($_.Data) -and
                     (-not $_.FileName -or "$($_.ContentType)" -like 'text/plain*' -or $_.FileName -like '*.txt')
                 })
-                if ($parts.Count -eq 1 -and $textParts.Count -eq 1 -and $target -notmatch '[?&]as=file') {
+                if (-not $parts.Count) {
+                    # "Send File to PC" run without a shared item posts a form with an empty file field.
+                    Send-Text $stream '400 Bad Request' 'Nothing was sent'
+                } elseif ($parts.Count -eq 1 -and $textParts.Count -eq 1 -and $target -notmatch '[?&]as=file') {
                     Set-ClipboardText $Utf8NoBom.GetString($parts[0].Data)
                     Send-Text $stream '200 OK' 'Text copied'
                 } else {
