@@ -91,6 +91,14 @@ Scan the QR code on the setup page (opened by `-Install` or `-Info`) with the iP
 
 The setup page is at `http://<PC-IP>:38765/setup?key=<your-key>`, the same address as the sync URL with `/setup` added.
 
+The ready-made shortcuts, if you'd rather add them directly (each asks for your address when you add it):
+
+| Shortcut | What it does |
+|---|---|
+| [Get from PC](https://www.icloud.com/shortcuts/905f2537215e4b22b1980facda92d167) | Puts the PC clipboard on your iPhone |
+| [Send Clipboard to PC](https://www.icloud.com/shortcuts/ac4370954568405bae60844963c87b13) | Sends your iPhone clipboard to the PC |
+| [Send File to PC](https://www.icloud.com/shortcuts/58df2f621976410e9bbfc29a0864adec) | Share photos and files from the Share Sheet |
+
 ### Manual way: build the shortcuts yourself
 
 Open the **Shortcuts** app and create these three shortcuts.
@@ -156,6 +164,5 @@ This works the same in the Shortcuts app on iPhone or Mac.
 - Files are held in memory while transferring, so very large videos (several GB) are not a good fit.
 - VPNs on the PC (e.g. NordVPN's "Invisibility on LAN") or on the iPhone can block local connections.
 - The setup page draws its QR code in your browser with a small library from cdnjs. Your address and key never leave your network.
-- Until the ready-made shortcuts are published, their buttons on the setup page show "Coming soon"; use the manual steps above.
 - Errors are written to `error.log` next to the script.
 - Port 38765 is used because Windows/Hyper-V often reserves lower ports. `-Install` warns you if your PC reserves it.

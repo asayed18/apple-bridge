@@ -41,9 +41,9 @@ $GuideUrl     = 'https://github.com/asayed18/apple-bridge/tree/main/iphone-clipb
 # iCloud links of the ready-made shortcuts, shown on the phone setup page (/setup).
 # Each shortcut asks for the sync URL when it is added. Empty = not published yet.
 $ShortcutLinks = [ordered]@{
-    'Get from PC'          = ''
-    'Send Clipboard to PC' = ''
-    'Send File to PC'      = ''
+    'Get from PC'          = 'https://www.icloud.com/shortcuts/905f2537215e4b22b1980facda92d167'
+    'Send Clipboard to PC' = 'https://www.icloud.com/shortcuts/ac4370954568405bae60844963c87b13'
+    'Send File to PC'      = 'https://www.icloud.com/shortcuts/58df2f621976410e9bbfc29a0864adec'
 }
 
 # ---------- Paired devices ----------
