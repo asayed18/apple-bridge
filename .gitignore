@@ -3,4 +3,5 @@ key.txt
 devices.json
 last-seen.json
 *.tmp
+backup-*/
 error.log
